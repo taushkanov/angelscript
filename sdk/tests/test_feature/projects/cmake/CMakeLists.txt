@@ -117,6 +117,7 @@ add_executable(
         ../../source/test_shark.cpp
         ../../source/test_singleton.cpp
         ../../source/test_stack2.cpp
+	../../source/test_static.cpp
         ../../source/test_stdvector.cpp
         ../../source/test_stream.cpp
         ../../source/test_structintf.cpp

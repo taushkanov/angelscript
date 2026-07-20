@@ -129,6 +129,7 @@ namespace TestFactory           { bool Test(); }
 namespace TestRZ                { bool Test(); }
 namespace TestImplicitCast      { bool Test(); }
 namespace TestAssign            { bool Test(); }
+namespace TestStatic            { bool Test(); }
 namespace TestTypedef           { bool Test(); }
 namespace TestEnum              { bool Test(); }
 namespace TestRefCast           { bool Test(); }
@@ -313,6 +314,7 @@ int allTests()
 	if( TestTypedef::Test()                     ) goto failed; else PRINTF("-- TestTypedef passed\n");
 	if( TestImport::Test()                      ) goto failed; else PRINTF("-- TestImport passed\n");
 	if( TestAssign::Test()                      ) goto failed; else PRINTF("-- TestAssign passed\n");
+	if( TestStatic::Test()                      ) goto failed; else PRINTF("-- TestStatic passed\n");
 	if( TestSwitch()                            ) goto failed; else PRINTF("-- TestSwitch passed\n");
 	if( TestExceptionMemory::Test()             ) goto failed; else PRINTF("-- TestExceptionMemory passed\n");
 	if( TestObject::Test()                      ) goto failed; else PRINTF("-- TestObject passed\n");
