@@ -1411,9 +1411,22 @@ asCScriptFunction *asCReader::ReadFunction(bool &isNew, bool addToModule, bool a
 					else
 						var->declaredAtProgramPos = 0;
 
-					var->stackOffset = SanityCheck(ReadEncodedInt(),10000);
-					var->onHeap = var->stackOffset & 1;
-					var->stackOffset >>= 1;
+					var->onHeap = false;
+					var->isStatic = false;
+
+					int data = SanityCheck(ReadEncodedInt(), 1000000);
+					if( data < 0 )
+					{
+						// Static local: negative value stores the global property id
+						var->isStatic = true;
+						var->stackOffset = -(data + 1);
+					}
+					else
+					{
+						var->onHeap = (data & 1) ? true : false;
+						var->isStatic = false;
+						var->stackOffset = (int)(data >> 1);
+					}
 					ReadDataType(&var->type);
 
 					if (error)
@@ -2254,11 +2267,20 @@ void asCReader::ReadObjectProperty(asCObjectType *ot)
 	bool isPrivate = (flags & 1) ? true : false;
 	bool isProtected = (flags & 2) ? true : false;
 	bool isInherited = (flags & 4) ? true : false;
+	bool isStatic = (flags & 8) ? true : false;
+
+	asCGlobalProperty *staticGlobal = 0;
+	if( isStatic )
+	{
+		asUINT propId = ReadEncodedUInt();
+		if( propId < engine->globalProperties.GetLength() )
+			staticGlobal = engine->globalProperties[propId];
+	}
 
 	// TODO: shared: If the type is shared and pre-existing, we should just
 	//               validate that the loaded methods match the original
 	if( !existingShared.MoveTo(0, ot) )
-		ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
+		ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited, isStatic, staticGlobal);
 }
 
 void asCReader::ReadDataType(asCDataType *dt)
@@ -3243,7 +3265,8 @@ void asCReader::TranslateFunction(asCScriptFunction *func)
 	for( n = 0; n < func->scriptData->variables.GetLength(); n++ )
 	{
 		func->scriptData->variables[n]->declaredAtProgramPos = instructionNbrToPos[func->scriptData->variables[n]->declaredAtProgramPos];
-		func->scriptData->variables[n]->stackOffset = AdjustStackPosition(func->scriptData->variables[n]->stackOffset);
+		if( !func->scriptData->variables[n]->isStatic )
+			func->scriptData->variables[n]->stackOffset = AdjustStackPosition(func->scriptData->variables[n]->stackOffset);
 	}
 
 	// Adjust the get offsets. This must be done in the second iteration because
@@ -3685,6 +3708,9 @@ void asCReader::CalculateAdjustmentByPos(asCScriptFunction *func)
 	{
 		// Skip function parameters as these are adjusted by adjustNegativeStackByPos
 		if (func->scriptData->variables[n]->stackOffset <= 0)
+			continue;
+
+		if (func->scriptData->variables[n]->isStatic)
 			continue;
 
 		asCDataType t = func->scriptData->variables[n]->type;
@@ -4440,11 +4466,16 @@ void asCWriter::WriteFunction(asCScriptFunction* func)
 				WriteString(&func->scriptData->variables[i]->name);
 			}
 
-			// The stack position must be adjusted according to the pointer sizes
-			asUINT data = AdjustStackPosition(func->scriptData->variables[i]->stackOffset) << 1;
-			// Encode the onHeap flag in the stackOffset to avoid 1 byte increase
-			data |= func->scriptData->variables[i]->onHeap & 1;
-			WriteEncodedInt64(data);
+			// Static locals are encoded as negative values to avoid collision
+			// with the ordinary (stackOffset << 1) | onHeap encoding.
+			if( func->scriptData->variables[i]->isStatic )
+				WriteEncodedInt64(-(func->scriptData->variables[i]->stackOffset + 1));
+			else
+			{
+				asUINT data = (asUINT)AdjustStackPosition(func->scriptData->variables[i]->stackOffset) << 1;
+				data |= func->scriptData->variables[i]->onHeap ? 1u : 0u;
+				WriteEncodedInt64(data);
+			}
 			WriteDataType(&func->scriptData->variables[i]->type);
 		}
 
@@ -4737,7 +4768,13 @@ void asCWriter::WriteObjectProperty(asCObjectProperty* prop)
 	if( prop->isPrivate ) flags |= 1;
 	if( prop->isProtected ) flags |= 2;
 	if( prop->isInherited ) flags |= 4;
+	if( prop->isStatic ) flags |= 8;
 	WriteEncodedInt64(flags);
+	if( prop->isStatic )
+	{
+		// Store the global property used for the static member
+		WriteEncodedInt64(prop->staticGlobal ? prop->staticGlobal->id : 0);
+	}
 }
 
 void asCWriter::WriteDataType(const asCDataType *dt)
@@ -4899,6 +4936,9 @@ void asCWriter::CalculateAdjustmentByPos(asCScriptFunction *func)
 	{
 		// Skip function parameters as these are adjusted by adjustNegativeStackByPos
 		if (func->scriptData->variables[n]->stackOffset <= 0)
+			continue;
+
+		if (func->scriptData->variables[n]->isStatic)
 			continue;
 
 		asCDataType t = func->scriptData->variables[n]->type;

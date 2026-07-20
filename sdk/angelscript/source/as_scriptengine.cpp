@@ -1166,6 +1166,12 @@ int asCScriptEngine::ShutDownAndRelease()
 }
 
 // internal
+asSNameSpace *asCScriptEngine::GetInternalStaticNameSpace()
+{
+	return AddNameSpace(AS_INTERNAL_STATIC_NAMESPACE);
+}
+
+// internal
 asSNameSpace *asCScriptEngine::AddNameSpace(const char *name)
 {
 	// First check if it doesn't exist already

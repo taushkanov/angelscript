@@ -230,7 +230,8 @@ int asCCompiler::CompileDefaultCopyConstructor(asCBuilder* in_builder, asCScript
 		{
 			// Call variable destructors here, for variables not yet destroyed
 			if (v->name != "return")
-				CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
+				if( !v->isStatic )
+					CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
 		}
 
 		// Do not deallocate parameters
@@ -583,6 +584,10 @@ void asCCompiler::CompileMemberInitializationCopy(asCByteCode* bc)
 	{
 		asCObjectProperty* prop = outFunc->objectType->properties[n];
 
+		// Static members are not part of the instance
+		if (prop->isStatic)
+			continue;
+
 		// Check if the property is inherited
 		asCScriptNode* declNode = 0;
 		for (asUINT m = 0; m < m_classDecl->propInits.GetLength(); m++)
@@ -655,7 +660,11 @@ void asCCompiler::CompileMemberInitialization(asCByteCode *bc, bool onlyDefaults
 	for( asUINT n = 0; n < outFunc->objectType->properties.GetLength(); n++ )
 	{
 		asCObjectProperty *prop = outFunc->objectType->properties[n];
-		
+
+		// Static members are initialized as globals, not in the constructor
+		if( prop->isStatic )
+			continue;
+
 		// Don't compile additional member initialization if it has already been explicitly initialized in the body
 		if (engine->ep.memberInitMode == 1 && m_initializedProperties.IndexOf(prop) >= 0)
 			continue;
@@ -916,7 +925,8 @@ int asCCompiler::CompileFunction(asCBuilder *in_builder, asCScriptCode *in_scrip
 		{
 			// Call variables destructors
 			if( v->name != "return" )
-				CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
+				if( !v->isStatic )
+					CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
 
 			DeallocateVariable(v->stackOffset);
 		}
@@ -934,7 +944,8 @@ int asCCompiler::CompileFunction(asCBuilder *in_builder, asCScriptCode *in_scrip
 		{
 			// Call variable destructors here, for variables not yet destroyed
 			if( v->name != "return" )
-				CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
+				if( !v->isStatic )
+					CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
 		}
 
 		// Do not deallocate parameters
@@ -1075,7 +1086,7 @@ int asCCompiler::CallCopyConstructor(asCDataType &type, int offset, bool isObjec
 
 			// TODO: value on stack: This probably needs to be done in PerformFunctionCall
 			// Mark the object as initialized
-			if( !isObjectOnHeap )
+			if( !isObjectOnHeap && isVarGlobOrMem == asVGM_VARIABLE )
 				ctx->bc.ObjInfo(offset, asOBJ_INIT);
 
 			return 0;
@@ -1494,7 +1505,8 @@ void asCCompiler::CompileStatementBlock(asCScriptNode *block, bool ownVariableSc
 			// If the block is terminated with a break, continue, or
 			// return the variables are already destroyed
 			if( !isFinished && !*hasReturn )
-				CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
+				if( !v->isStatic )
+					CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
 
 			// Don't deallocate function parameters
 			if( v->stackOffset > 0 )
@@ -1589,7 +1601,8 @@ int asCCompiler::CompileGlobalVariable(asCBuilder *in_builder, asCScriptCode *in
 		sVariable *v = variables->variables[n];
 
 		// Call variable destructors here, for variables not yet destroyed
-		CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
+		if( !v->isStatic )
+			CallDestructor(v->type, v->stackOffset, v->onHeap, &byteCode);
 
 		DeallocateVariable(v->stackOffset);
 	}
@@ -3097,11 +3110,34 @@ bool asCCompiler::CompileAutoType(asCDataType &type, asCExprContext &compiledCtx
 
 void asCCompiler::CompileDeclaration(asCScriptNode *decl, asCByteCode *bc)
 {
+	asCScriptNode *typeNode = decl->firstChild;
+	bool isStatic = false;
+	if( typeNode && typeNode->tokenType == ttStatic )
+	{
+		isStatic = true;
+		typeNode = typeNode->next;
+	}
+
+	if( isStatic && engine->ep.disallowGlobalVars )
+	{
+		Error(TXT_STATIC_REQUIRES_GLOBAL_VARS, decl);
+		return;
+	}
+
+	// Shared functions cannot use static locals (they need module globals)
+	if( isStatic && outFunc->IsShared() )
+	{
+		asCString msg;
+		msg.Format(TXT_SHARED_CANNOT_ACCESS_NON_SHARED_VAR_s, "static");
+		Error(msg, decl);
+		return;
+	}
+
 	// Get the data type
-	asCDataType type = builder->CreateDataTypeFromNode(decl->firstChild, script, outFunc->nameSpace, false, outFunc->objectType, true, 0, 0, &m_namespaceVisibility);
+	asCDataType type = builder->CreateDataTypeFromNode(typeNode, script, outFunc->nameSpace, false, outFunc->objectType, true, 0, 0, &m_namespaceVisibility);
 
 	// Declare all variables in this declaration
-	asCScriptNode *node = decl->firstChild->next;
+	asCScriptNode *node = typeNode->next;
 	while( node )
 	{
 		// If this is an auto type, we have to compile the assignment now to figure out the type
@@ -3161,35 +3197,100 @@ void asCCompiler::CompileDeclaration(asCScriptNode *decl, asCByteCode *bc)
 			Error(str, node);
 		}
 
-		int offset = AllocateVariable(type, false);
-		if (DeclareVariable(name, type, offset, bc, node) < 0)
-			return;
-
 		// Keep the node for the variable decl
 		asCScriptNode *varNode = node;
-
 		node = node->next;
 
-		if( node == 0 || node->nodeType == snIdentifier )
+		if( isStatic )
 		{
-			// Initialize with default constructor
-			CompileInitialization(0, bc, type, varNode, offset, 0, asVGM_VARIABLE);
-		}
-		else
-		{
-			// Compile the initialization expression
-			asQWORD constantValue = 0;
-			if( CompileInitialization(node, bc, type, varNode, offset, &constantValue, asVGM_VARIABLE, preCompiled ? &compiledCtx : 0) )
+			// Allocate storage as a module global + a once-init flag
+			asCString globName;
+			globName.Format("__sl_%d_%u_%s", outFunc->id, (asUINT)varNode->tokenPos, name.AddressOf());
+			asCString flagName = globName + "_i";
+
+			asSNameSpace *staticNs = builder->engine->GetInternalStaticNameSpace();
+			asCGlobalProperty *globProp = builder->module->AllocateGlobalProperty(globName.AddressOf(), type, staticNs);
+			asCGlobalProperty *flagProp = builder->module->AllocateGlobalProperty(flagName.AddressOf(), asCDataType::CreatePrimitive(ttBool, false), staticNs);
+
+			// Declare a local name that aliases the global storage
+			if( variables->DeclareVariable(name.AddressOf(), type, 0, false) < 0 )
 			{
-				// Check if the variable should be marked as pure constant
+				asCString str;
+				str.Format(TXT_s_ALREADY_DECLARED, name.AddressOf());
+				Error(str, varNode);
+				return;
+			}
+
+			sVariable *v = variables->GetVariable(name.AddressOf());
+			v->isStatic = true;
+			v->staticProp = globProp;
+			v->isInitialized = true;
+			v->onHeap = false;
+
+			// Marker for debug info (use global property id as offset placeholder)
+			bc->VarDecl((int)outFunc->scriptData->variables.GetLength());
+			outFunc->AddVariable(name, type, globProp->id, false, true);
+
+			// once-init: if (!flag) { init; flag = true; }
+			int afterInit = nextLabel++;
+			int tmpFlag = AllocateVariable(asCDataType::CreatePrimitive(ttBool, false), true);
+			bc->InstrW_PTR(asBC_CpyGtoV4, (asWORD)tmpFlag, flagProp->GetAddressOfValue());
+			bc->InstrSHORT(asBC_CpyVtoR4, (short)tmpFlag);
+			bc->Instr(asBC_ClrHi);
+			ReleaseTemporaryVariable(tmpFlag, bc);
+			bc->InstrDWORD(asBC_JNZ, afterInit);
+
+			asCScriptNode *initNode = 0;
+			if( node && node->nodeType != snIdentifier )
+			{
+				initNode = node;
+				node = node->next;
+			}
+
+			asQWORD constantValue = 0;
+			if( CompileInitialization(initNode, bc, type, varNode, globProp->id, &constantValue, asVGM_GLOBAL, preCompiled ? &compiledCtx : 0) )
+			{
 				if( type.IsPrimitive() && type.IsReadOnly() )
 				{
-					sVariable *v = variables->GetVariable(name.AddressOf());
 					v->isPureConstant = true;
 					v->constantValue = constantValue;
 				}
 			}
-			node = node->next;
+
+			tmpFlag = AllocateVariable(asCDataType::CreatePrimitive(ttBool, false), true);
+			bc->InstrSHORT_DW(asBC_SetV4, (short)tmpFlag, 1);
+			bc->InstrW_PTR(asBC_CpyVtoG4, (asWORD)tmpFlag, flagProp->GetAddressOfValue());
+			ReleaseTemporaryVariable(tmpFlag, bc);
+
+			bc->Label((short)afterInit);
+		}
+		else
+		{
+			int offset = AllocateVariable(type, false);
+			if (DeclareVariable(name, type, offset, bc, varNode) < 0)
+				return;
+
+			if( node == 0 || node->nodeType == snIdentifier )
+			{
+				// Initialize with default constructor
+				CompileInitialization(0, bc, type, varNode, offset, 0, asVGM_VARIABLE);
+			}
+			else
+			{
+				// Compile the initialization expression
+				asQWORD constantValue = 0;
+				if( CompileInitialization(node, bc, type, varNode, offset, &constantValue, asVGM_VARIABLE, preCompiled ? &compiledCtx : 0) )
+				{
+					// Check if the variable should be marked as pure constant
+					if( type.IsPrimitive() && type.IsReadOnly() )
+					{
+						sVariable *v = variables->GetVariable(name.AddressOf());
+						v->isPureConstant = true;
+						v->constantValue = constantValue;
+					}
+				}
+				node = node->next;
+			}
 		}
 	}
 
@@ -5144,7 +5245,8 @@ void asCCompiler::CompileForStatement(asCScriptNode *fnode, asCByteCode *bc)
 		sVariable *v = variables->variables[n];
 
 		// Call variable destructors here, for variables not yet destroyed
-		CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
+		if( !v->isStatic )
+			CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
 
 		// Don't deallocate function parameters
 		if( v->stackOffset > 0 )
@@ -5670,7 +5772,8 @@ void asCCompiler::CompileForEachStatement(asCScriptNode* node, asCByteCode* bc)
 		sVariable* v = variables->variables[n];
 
 		// Call variable destructors here, for variables not yet destroyed
-		CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
+		if( !v->isStatic )
+			CallDestructor(v->type, v->stackOffset, v->onHeap, bc);
 		DeallocateVariable(v->stackOffset);
 	}
 
@@ -5851,7 +5954,8 @@ void asCCompiler::CompileBreakStatement(asCScriptNode *node, asCByteCode *bc)
 	while( !vs->isBreakScope )
 	{
 		for( int n = (int)vs->variables.GetLength() - 1; n >= 0; n-- )
-			CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
+			if( !vs->variables[n]->isStatic )
+				CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
 
 		vs = vs->parent;
 	}
@@ -5875,7 +5979,8 @@ void asCCompiler::CompileContinueStatement(asCScriptNode *node, asCByteCode *bc)
 	while( !vs->isContinueScope )
 	{
 		for( int n = (int)vs->variables.GetLength() - 1; n >= 0; n-- )
-			CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
+			if( !vs->variables[n]->isStatic )
+				CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
 
 		vs = vs->parent;
 	}
@@ -6245,7 +6350,8 @@ void asCCompiler::DestroyVariables(asCByteCode *bc)
 	{
 		for( int n = (int)vs->variables.GetLength() - 1; n >= 0; n-- )
 			if( vs->variables[n]->stackOffset > 0 )
-				CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
+				if( !vs->variables[n]->isStatic )
+					CallDestructor(vs->variables[n]->type, vs->variables[n]->stackOffset, vs->variables[n]->onHeap, bc);
 
 		vs = vs->parent;
 	}
@@ -11039,6 +11145,41 @@ int asCCompiler::CompileVariableAccess(const asCString &name, const asCString &s
 		sVariable *v = variables->GetVariable(name.AddressOf());
 		asASSERT(v);
 
+		// Static locals are stored as global properties
+		if( v->isStatic && v->staticProp )
+		{
+			asCGlobalProperty *prop = v->staticProp;
+			if( v->isPureConstant )
+				ctx->type.SetConstantData(v->type, v->constantValue);
+			else
+			{
+				ctx->type.Set(prop->type);
+				ctx->type.isLValue = !prop->type.IsReadOnly();
+
+				if( ctx->type.dataType.IsPrimitive() )
+				{
+					ctx->bc.InstrPTR(asBC_LDG, prop->GetAddressOfValue());
+					ctx->type.dataType.MakeReference(true);
+				}
+				else
+				{
+					ctx->bc.InstrPTR(asBC_PGA, prop->GetAddressOfValue());
+
+					if( (ctx->type.dataType.GetTypeInfo()->flags & asOBJ_VALUE) ||
+						ctx->type.dataType.IsObjectHandle() )
+					{
+						ctx->type.dataType.MakeReference(true);
+					}
+					else
+					{
+						asASSERT((ctx->type.dataType.GetTypeInfo()->flags & asOBJ_REF) && !ctx->type.dataType.IsObjectHandle());
+						ctx->bc.Instr(asBC_RDSPtr);
+					}
+				}
+			}
+			return 0;
+		}
+
 		if( v->isPureConstant )
 			ctx->type.SetConstantData(v->type, v->constantValue);
 		else if( v->type.IsPrimitive() )
@@ -11163,6 +11304,84 @@ int asCCompiler::CompileVariableAccess(const asCString &name, const asCString &s
 
 		if (symbolType == SL_CLASSPROP)
 		{
+			asCObjectType *memberOf = objType;
+			if( !memberOf )
+				memberOf = CastToObjectType(lookupResult.type.dataType.GetTypeInfo());
+			if( !memberOf && outFunc )
+				memberOf = outFunc->objectType;
+			asASSERT(memberOf);
+
+			asCDataType dt = asCDataType::CreateType(memberOf, false);
+			asCObjectProperty *prop = builder->GetObjectProperty(dt, name.AddressOf());
+			asASSERT(prop);
+
+			// Static class members are accessed like globals; ClassName::prop is allowed
+			if (prop->isStatic)
+			{
+				if (!prop->staticGlobal)
+				{
+					Error(TXT_STATIC_REQUIRES_GLOBAL_VARS, errNode);
+					return -1;
+				}
+
+				// Access control for private/protected statics
+				if ((prop->isPrivate || prop->isProtected) && (!outFunc || outFunc->objectType != dt.GetTypeInfo()))
+				{
+					// Allow access from derived class for protected
+					bool allowed = false;
+					if (prop->isProtected && outFunc && outFunc->objectType)
+					{
+						asCObjectType *ot = outFunc->objectType;
+						while (ot)
+						{
+							if (ot == dt.GetTypeInfo())
+							{
+								allowed = true;
+								break;
+							}
+							ot = ot->derivedFrom;
+						}
+					}
+					if (!allowed)
+					{
+						asCString msg;
+						if (prop->isPrivate)
+							msg.Format(TXT_PRIVATE_PROP_ACCESS_s, name.AddressOf());
+						else
+							msg.Format(TXT_PROTECTED_PROP_ACCESS_s, name.AddressOf());
+						Error(msg, errNode);
+						return -1;
+					}
+				}
+
+				asCGlobalProperty *gprop = prop->staticGlobal;
+				ctx->type.Set(gprop->type);
+				ctx->type.isLValue = !gprop->type.IsReadOnly();
+
+				if (ctx->type.dataType.IsPrimitive())
+				{
+					ctx->bc.InstrPTR(asBC_LDG, gprop->GetAddressOfValue());
+					ctx->type.dataType.MakeReference(true);
+				}
+				else
+				{
+					ctx->bc.InstrPTR(asBC_PGA, gprop->GetAddressOfValue());
+
+					if ((ctx->type.dataType.GetTypeInfo()->flags & asOBJ_VALUE) ||
+						ctx->type.dataType.IsObjectHandle())
+					{
+						ctx->type.dataType.MakeReference(true);
+					}
+					else
+					{
+						asASSERT((ctx->type.dataType.GetTypeInfo()->flags & asOBJ_REF) && !ctx->type.dataType.IsObjectHandle());
+						ctx->bc.Instr(asBC_RDSPtr);
+					}
+				}
+
+				return 0;
+			}
+
 			if (scope != "")
 			{
 				// Cannot access non-static members like this
@@ -11171,14 +11390,6 @@ int asCCompiler::CompileVariableAccess(const asCString &name, const asCString &s
 				Error(msg, errNode);
 				return -1;
 			}
-
-			asCDataType dt;
-			if (objType)
-				dt = asCDataType::CreateType(objType, false);
-			else
-				dt = asCDataType::CreateType(outFunc->objectType, false);
-			asCObjectProperty *prop = builder->GetObjectProperty(dt, name.AddressOf());
-			asASSERT(prop);
 
 			// Count the access, so it can be determined if the access happens before initialization in constructors
 			if (m_isConstructor)
@@ -14339,6 +14550,42 @@ int asCCompiler::CompileExpressionPostOp(asCScriptNode *node, asCExprContext *ct
 						else
 							msg.Format(TXT_PROTECTED_PROP_ACCESS_s, name.AddressOf());
 						Error(msg, node);
+					}
+
+					// Static members do not use the instance pointer
+					if( prop->isStatic )
+					{
+						if( !prop->staticGlobal )
+						{
+							Error(TXT_STATIC_REQUIRES_GLOBAL_VARS, node);
+							return -1;
+						}
+
+						// Discard the object expression (keep deferred cleanups)
+						ProcessDeferredParams(ctx);
+						ctx->bc.Instr(asBC_PopPtr);
+
+						asCGlobalProperty *gprop = prop->staticGlobal;
+						ctx->type.Set(gprop->type);
+						ctx->type.isLValue = !gprop->type.IsReadOnly();
+						ctx->type.isVariable = false;
+						ctx->type.isTemporary = false;
+
+						if( ctx->type.dataType.IsPrimitive() )
+						{
+							ctx->bc.InstrPTR(asBC_LDG, gprop->GetAddressOfValue());
+							ctx->type.dataType.MakeReference(true);
+						}
+						else
+						{
+							ctx->bc.InstrPTR(asBC_PGA, gprop->GetAddressOfValue());
+							if( (ctx->type.dataType.GetTypeInfo()->flags & asOBJ_VALUE) ||
+								ctx->type.dataType.IsObjectHandle() )
+								ctx->type.dataType.MakeReference(true);
+							else
+								ctx->bc.Instr(asBC_RDSPtr);
+						}
+						return 0;
 					}
 
 					// Adjust the pointer for composite member

@@ -337,7 +337,7 @@ asUINT asCObjectType::GetPropertyCount() const
 }
 
 // interface
-int asCObjectType::GetProperty(asUINT index, const char **out_name, int *out_typeId, bool *out_isPrivate, bool *out_isProtected, int *out_offset, bool *out_isReference, asDWORD *out_accessMask, int *out_compositeOffset, bool *out_isCompositeIndirect, bool *out_isConst) const
+int asCObjectType::GetProperty(asUINT index, const char **out_name, int *out_typeId, bool *out_isPrivate, bool *out_isProtected, int *out_offset, bool *out_isReference, asDWORD *out_accessMask, int *out_compositeOffset, bool *out_isCompositeIndirect, bool *out_isConst, bool *out_isStatic) const
 {
 	if( index >= properties.GetLength() )
 		return asINVALID_ARG;
@@ -363,8 +363,25 @@ int asCObjectType::GetProperty(asUINT index, const char **out_name, int *out_typ
 		*out_isCompositeIndirect = prop->isCompositeIndirect;
 	if (out_isConst)
 		*out_isConst = prop->type.IsReadOnly();
+	if (out_isStatic)
+		*out_isStatic = prop->isStatic;
 
 	return 0;
+}
+
+void *asCObjectType::GetAddressOfStaticProperty(asUINT index) const
+{
+	if( index >= properties.GetLength() )
+		return 0;
+
+	asCObjectProperty *prop = properties[index];
+	if( !prop->isStatic || !prop->staticGlobal )
+		return 0;
+
+	if( prop->type.IsObject() && !prop->type.IsObjectHandle() )
+		return *(void**)(prop->staticGlobal->GetAddressOfValue());
+
+	return (void*)(prop->staticGlobal->GetAddressOfValue());
 }
 
 // interface
@@ -380,6 +397,8 @@ const char *asCObjectType::GetPropertyDeclaration(asUINT index, bool includeName
 		*tempString = "protected ";
 	else
 		*tempString = "";
+	if( properties[index]->isStatic )
+		*tempString += "static ";
 	*tempString += properties[index]->type.Format(nameSpace, includeNamespace);
 	*tempString += " ";
 	*tempString += properties[index]->name;
@@ -508,7 +527,7 @@ asIScriptFunction *asCObjectType::GetBehaviourByIndex(asUINT index, asEBehaviour
 }
 
 // internal
-asCObjectProperty *asCObjectType::AddPropertyToClass(const asCString &propName, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited)
+asCObjectProperty *asCObjectType::AddPropertyToClass(const asCString &propName, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited, bool isStatic, asCGlobalProperty *staticGlobal)
 {
 	asASSERT( flags & asOBJ_SCRIPT_OBJECT );
 	asASSERT( dt.CanBeInstantiated() );
@@ -522,11 +541,29 @@ asCObjectProperty *asCObjectType::AddPropertyToClass(const asCString &propName, 
 		return 0;
 	}
 
-	prop->name        = propName;
-	prop->type        = dt;
-	prop->isPrivate   = isPrivate;
-	prop->isProtected = isProtected;
-	prop->isInherited = isInherited;
+	prop->name         = propName;
+	prop->type         = dt;
+	prop->isPrivate    = isPrivate;
+	prop->isProtected  = isProtected;
+	prop->isInherited  = isInherited;
+	prop->isStatic     = isStatic;
+	prop->staticGlobal = staticGlobal;
+
+	if( isStatic )
+	{
+		// Static members are stored as module globals, not in the instance layout
+		prop->byteOffset = 0;
+		properties.PushLast(prop);
+
+		asCConfigGroup *group = engine->FindConfigGroupForTypeInfo(prop->type.GetTypeInfo());
+		if( group != 0 ) group->AddRef();
+
+		asCTypeInfo *type = prop->type.GetTypeInfo();
+		if( type )
+			type->AddRefInternal();
+
+		return prop;
+	}
 
 	int propSize;
 	if( dt.IsObject() )

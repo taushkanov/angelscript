@@ -2622,7 +2622,7 @@ asCScriptNode *asCParser::ParseScript(bool inBlock)
 				node->AddChildLast(ParseInterface());
 			else if( t1.type == ttFuncDef )
 				node->AddChildLast(ParseFuncDef());
-			else if( t1.type == ttConst || t1.type == ttScope || t1.type == ttAuto || IsDataType(t1) )
+			else if( t1.type == ttConst || t1.type == ttScope || t1.type == ttAuto || t1.type == ttStatic || IsDataType(t1) )
 			{
 				if( IsVirtualPropertyDecl() )
 					node->AddChildLast(ParseVirtualPropertyDecl(false, false));
@@ -2960,11 +2960,28 @@ bool asCParser::IsVarDecl()
 	GetToken(&t);
 	RewindTo(&t);
 
-	// A class property decl can be preceded by 'private' or 'protected'
+	// Optional 'private'/'protected' and/or 'static' in any order
 	sToken t1;
 	GetToken(&t1);
-	if( t1.type != ttPrivate && t1.type != ttProtected )
-		RewindTo(&t1);
+	bool seenAccess = false;
+	bool seenStatic = false;
+	for(;;)
+	{
+		if( !seenAccess && (t1.type == ttPrivate || t1.type == ttProtected) )
+		{
+			seenAccess = true;
+			GetToken(&t1);
+			continue;
+		}
+		if( !seenStatic && t1.type == ttStatic )
+		{
+			seenStatic = true;
+			GetToken(&t1);
+			continue;
+		}
+		break;
+	}
+	RewindTo(&t1);
 
 	// A variable decl starts with the type
 	if (!FindTokenAfterType(t1))
@@ -4131,11 +4148,30 @@ asCScriptNode *asCParser::ParseDeclaration(bool isClassProp, bool isGlobalVar)
 	GetToken(&t);
 	RewindTo(&t);
 
-	// A class property can be preceeded by private
-	if( t.type == ttPrivate && isClassProp )
-		node->AddChildLast(ParseToken(ttPrivate));
-	else if( t.type == ttProtected && isClassProp )
-		node->AddChildLast(ParseToken(ttProtected));
+	// Optional private/protected and static in any order
+	bool seenAccess = false;
+	bool seenStatic = false;
+	for(;;)
+	{
+		GetToken(&t);
+		RewindTo(&t);
+		if( isClassProp && !seenAccess && (t.type == ttPrivate || t.type == ttProtected) )
+		{
+			seenAccess = true;
+			if( t.type == ttPrivate )
+				node->AddChildLast(ParseToken(ttPrivate));
+			else
+				node->AddChildLast(ParseToken(ttProtected));
+			continue;
+		}
+		if( !seenStatic && t.type == ttStatic )
+		{
+			seenStatic = true;
+			node->AddChildLast(ParseToken(ttStatic));
+			continue;
+		}
+		break;
+	}
 
 	// Parse data type
 	node->AddChildLast(ParseType(true, false, !isClassProp));

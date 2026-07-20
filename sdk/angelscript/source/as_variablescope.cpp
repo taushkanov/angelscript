@@ -93,6 +93,8 @@ int asCVariableScope::DeclareVariable(const char *name, const asCDataType &type,
 	var->isInitialized  = false;
 	var->isPureConstant = false;
 	var->onHeap         = onHeap;
+	var->isStatic       = false;
+	var->staticProp     = 0;
 
 	// Parameters are initialized
 	if( stackOffset <= 0 )

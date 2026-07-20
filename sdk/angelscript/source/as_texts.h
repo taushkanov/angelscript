@@ -133,6 +133,7 @@
 
 #define TXT_GET_SET_ACCESSOR_TYPE_MISMATCH_FOR_s "The property '%s' has mismatching types for the get and set accessors"
 #define TXT_GLOBAL_VARS_NOT_ALLOWED              "Global variables have been disabled by the application"
+#define TXT_STATIC_REQUIRES_GLOBAL_VARS          "Global variables are required for 'static'"
 
 #define TXT_HANDLE_ASSIGN_ON_NON_HANDLE_PROP     "It is not allowed to perform a handle assignment on a non-handle property"
 #define TXT_HANDLE_COMPARISON                    "The operand is implicitly converted to handle in order to compare them"

@@ -992,14 +992,18 @@ const char *asCScriptFunction::GetVarDecl(asUINT index, bool includeNamespace) c
 		return 0;
 
 	asCString *tempString = &asCThreadManager::GetLocalData()->string;
-	*tempString = scriptData->variables[index]->type.Format(nameSpace, includeNamespace);
-	*tempString += " " + scriptData->variables[index]->name;
+	*tempString = "";
+	if( scriptData->variables[index]->isStatic )
+		*tempString += "static ";
+	*tempString += scriptData->variables[index]->type.Format(nameSpace, includeNamespace);
+	*tempString += " ";
+	*tempString += scriptData->variables[index]->name;
 
 	return tempString->AddressOf();
 }
 
 // internal
-void asCScriptFunction::AddVariable(const asCString &in_name, const asCDataType &in_type, int in_stackOffset, bool in_onHeap)
+void asCScriptFunction::AddVariable(const asCString &in_name, const asCDataType &in_type, int in_stackOffset, bool in_onHeap, bool in_isStatic)
 {
 	asASSERT( scriptData );
 	asSScriptVariable *var = asNEW(asSScriptVariable);
@@ -1012,6 +1016,7 @@ void asCScriptFunction::AddVariable(const asCString &in_name, const asCDataType 
 	var->type                 = in_type;
 	var->stackOffset          = in_stackOffset;
 	var->onHeap               = in_onHeap;
+	var->isStatic             = in_isStatic;
 	var->declaredAtProgramPos = 0;
 	scriptData->variables.PushLast(var);
 }
@@ -1023,7 +1028,7 @@ asCTypeInfo *asCScriptFunction::GetTypeInfoOfLocalVar(short varOffset)
 
 	for( asUINT n = 0; n < scriptData->variables.GetLength(); n++ )
 	{
-		if (scriptData->variables[n]->stackOffset == varOffset)
+		if (scriptData->variables[n]->stackOffset == varOffset && !scriptData->variables[n]->isStatic)
 			return scriptData->variables[n]->type.GetTypeInfo();
 	}
 

@@ -2185,8 +2185,13 @@ int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSN
 	if( engine->ep.disallowGlobalVars )
 		WriteError(TXT_GLOBAL_VARS_NOT_ALLOWED, file, node);
 
+	asCScriptNode *typeNode = node->firstChild;
+	// Skip optional 'static' (redundant at global scope)
+	if( typeNode && typeNode->tokenType == ttStatic )
+		typeNode = typeNode->next;
+
 	// What data type is it?
-	asCDataType type = CreateDataTypeFromNode(node->firstChild, file, ns);
+	asCDataType type = CreateDataTypeFromNode(typeNode, file, ns);
 
 	if( !type.CanBeInstantiated() )
 	{
@@ -2202,7 +2207,7 @@ int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSN
 		WriteError(str, file, node);
 	}
 
-	asCScriptNode *n = node->firstChild->next;
+	asCScriptNode *n = typeNode->next;
 
 	while( n )
 	{
@@ -3509,10 +3514,11 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 			// Copy properties from base class to derived class
 			for( asUINT p = 0; p < baseType->properties.GetLength(); p++ )
 			{
-				asCObjectProperty *prop = AddPropertyToClass(decl, baseType->properties[p]->name, baseType->properties[p]->type, baseType->properties[p]->isPrivate, baseType->properties[p]->isProtected, true);
+				asCObjectProperty *baseProp = baseType->properties[p];
+				asCObjectProperty *prop = AddPropertyToClass(decl, baseProp->name, baseProp->type, baseProp->isPrivate, baseProp->isProtected, true, 0, 0, baseProp->isStatic, baseProp->staticGlobal);
 
-				// The properties must maintain the same offset
-				asASSERT(prop && prop->byteOffset == baseType->properties[p]->byteOffset); UNUSED_VAR(prop);
+				// The properties must maintain the same offset (static members are not part of the instance layout)
+				asASSERT(prop && (baseProp->isStatic || prop->byteOffset == baseProp->byteOffset)); UNUSED_VAR(prop);
 			}
 
 			// Copy methods from base class to derived class
@@ -3668,18 +3674,21 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 		{
 			asCScriptNode *nd = node->firstChild;
 
-			// Is the property declared as private or protected?
-			bool isPrivate = false, isProtected = false;
-			if( nd && nd->tokenType == ttPrivate )
+			// Is the property declared as private, protected and/or static?
+			bool isPrivate = false, isProtected = false, isStatic = false;
+			while( nd && (nd->tokenType == ttPrivate || nd->tokenType == ttProtected || nd->tokenType == ttStatic) )
 			{
-				isPrivate = true;
+				if( nd->tokenType == ttPrivate )
+					isPrivate = true;
+				else if( nd->tokenType == ttProtected )
+					isProtected = true;
+				else if( nd->tokenType == ttStatic )
+					isStatic = true;
 				nd = nd->next;
 			}
-			else if( nd && nd->tokenType == ttProtected )
-			{
-				isProtected = true;
-				nd = nd->next;
-			}
+
+			if( isStatic && engine->ep.disallowGlobalVars )
+				WriteError(TXT_STATIC_REQUIRES_GLOBAL_VARS, decl->script, node);
 
 			// Determine the type of the property
 			asCScriptCode *file = decl->script;
@@ -3691,7 +3700,8 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 				WriteError(msg, file, node);
 			}
 
-			if( dt.IsReadOnly() )
+			// Non-static properties cannot be const
+			if( dt.IsReadOnly() && !isStatic )
 				WriteError(TXT_PROPERTY_CANT_BE_CONST, file, node);
 
 			// Multiple properties can be declared separated by ,
@@ -3703,7 +3713,7 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 				if( !decl->isExistingShared )
 				{
 					CheckNameConflictMember(ot, name.AddressOf(), nd, file, true, false);
-					AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, nd);
+					AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, nd, isStatic);
 				}
 				else
 				{
@@ -3714,6 +3724,7 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 						asCObjectProperty *prop = ot->properties[p];
 						if( prop->isPrivate == isPrivate &&
 							prop->isProtected == isProtected &&
+							prop->isStatic == isStatic &&
 							prop->name == name &&
 							prop->type.IsEqualExceptRef(dt) )
 						{
@@ -3820,6 +3831,10 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 				// A valid structure is one that uses only primitives or other valid objects
 				asCObjectProperty *prop = ot->properties[n];
 				asCDataType dt = prop->type;
+
+				// Static members are stored outside the instance; they do not form a layout cycle
+				if( prop->isStatic )
+					continue;
 
 				// TODO: Add this check again, once solving the issues commented below
 				/*
@@ -4347,17 +4362,20 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 				if( n->nodeType == snDeclaration )
 				{
 					asCScriptNode *n2 = n->firstChild;
-					bool isPrivate = false, isProtected = false;
-					if( n2 && n2->tokenType == ttPrivate )
+					bool isPrivate = false, isProtected = false, isStatic = false;
+					while( n2 && (n2->tokenType == ttPrivate || n2->tokenType == ttProtected || n2->tokenType == ttStatic) )
 					{
-						isPrivate = true;
+						if( n2->tokenType == ttPrivate )
+							isPrivate = true;
+						else if( n2->tokenType == ttProtected )
+							isProtected = true;
+						else if( n2->tokenType == ttStatic )
+							isStatic = true;
 						n2 = n2->next;
 					}
-					else if( n2 && n2->tokenType == ttProtected )
-					{
-						isProtected = true;
-						n2 = n2->next;
-					}
+
+					if( isStatic && engine->ep.disallowGlobalVars )
+						WriteError(TXT_STATIC_REQUIRES_GLOBAL_VARS, mixin->script, n);
 
 					asCScriptCode *file = mixin->script;
 					asCDataType dt = CreateDataTypeFromNode(n2, file, mixin->ns);
@@ -4370,7 +4388,7 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 						WriteInfo(TXT_WHILE_INCLUDING_MIXIN, decl->script, node);
 					}
 
-					if( dt.IsReadOnly() )
+					if( dt.IsReadOnly() && !isStatic )
 						WriteError(TXT_PROPERTY_CANT_BE_CONST, file, n);
 
 					n2 = n2->next;
@@ -4397,7 +4415,7 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 								if( r < 0 )
 									WriteInfo(TXT_WHILE_INCLUDING_MIXIN, decl->script, node);
 
-								AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, n2);
+								AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, n2, isStatic);
 							}
 							else
 							{
@@ -4408,8 +4426,9 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 									asCObjectProperty *prop = ot->properties[p];
 									if( prop->isPrivate == isPrivate &&
 										prop->isProtected == isProtected &&
+										prop->isStatic == isStatic &&
 										prop->name == name &&
-										prop->type == dt )
+										prop->type.IsEqualExceptRef(dt) )
 									{
 										found = true;
 										break;
@@ -4419,13 +4438,13 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 								{
 									asCString str;
 									str.Format(TXT_SHARED_s_DOESNT_MATCH_ORIGINAL, ot->GetName());
-									WriteError(str, decl->script, decl->node);
+									WriteError(str, file, n2);
 									WriteInfo(TXT_WHILE_INCLUDING_MIXIN, decl->script, node);
 								}
 							}
 						}
 
-						// Skip the initialization expression
+						// Skip the initialization node
 						if( n2->next && n2->next->nodeType != snIdentifier )
 							n2 = n2->next;
 
@@ -4472,7 +4491,7 @@ int asCBuilder::CreateVirtualFunction(asCScriptFunction *func, int idx)
 	return vf->id;
 }
 
-asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited, asCScriptCode *file, asCScriptNode *node)
+asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited, asCScriptCode *file, asCScriptNode *node, bool isStatic, asCGlobalProperty *staticGlobal)
 {
 	if( node )
 	{
@@ -4507,6 +4526,40 @@ asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const
 
 		sPropertyInitializer p(name, declNode, initNode, file);
 		decl->propInits.PushLast(p);
+
+		// Static members are stored as global properties and initialized with other globals
+		if( isStatic && !engine->ep.disallowGlobalVars )
+		{
+			asCString globName = "__cm_";
+			globName += decl->typeInfo->name;
+			globName += "_";
+			globName += name;
+
+			asSNameSpace *staticNs = engine->GetInternalStaticNameSpace();
+			asCGlobalProperty *prop = module->AllocateGlobalProperty(globName.AddressOf(), dt, staticNs);
+			staticGlobal = prop;
+
+			sGlobalVariableDescription *gvar = asNEW(sGlobalVariableDescription);
+			if( gvar )
+			{
+				gvar->script             = file;
+				gvar->name               = globName;
+				gvar->isCompiled         = false;
+				gvar->datatype           = dt;
+				gvar->isEnumValue        = false;
+				gvar->ns                 = staticNs;
+				gvar->property           = prop;
+				gvar->index              = prop->id;
+				gvar->declaredAtNode     = declNode;
+				gvar->initializationNode = initNode;
+				// Take ownership of the nodes so they are not destroyed with the class AST
+				if( declNode )
+					declNode->DisconnectParent();
+				if( initNode )
+					initNode->DisconnectParent();
+				globVariables.Put(gvar);
+			}
+		}
 	}
 	else
 	{
@@ -4516,7 +4569,7 @@ asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const
 	}
 
 	// Add the property to the object type
-	return CastToObjectType(decl->typeInfo)->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
+	return CastToObjectType(decl->typeInfo)->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited, isStatic, staticGlobal);
 }
 
 bool asCBuilder::DoesMethodExist(asCObjectType *objType, int methodId, asUINT *methodIndex)

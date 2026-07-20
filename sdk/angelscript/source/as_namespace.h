@@ -32,6 +32,7 @@
 #ifndef AS_NAMESPACE_H
 #define AS_NAMESPACE_H
 
+#include "as_config.h"
 #include "as_string.h"
 
 BEGIN_AS_NAMESPACE
@@ -43,6 +44,11 @@ struct asSNameSpace
 	// TODO: namespace: A namespace should have access masks. The application should be
 	//                  able to restrict specific namespaces from access to specific modules
 };
+
+inline bool asCIsInternalStaticNameSpace(const asSNameSpace *ns)
+{
+	return ns && ns->name == AS_INTERNAL_STATIC_NAMESPACE;
+}
 
 
 struct asSNameSpaceNamePair

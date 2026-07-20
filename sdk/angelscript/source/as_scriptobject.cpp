@@ -798,13 +798,17 @@ void *asCScriptObject::GetAddressOfProperty(asUINT prop)
 	if( prop >= objType->properties.GetLength() )
 		return 0;
 
+	asCObjectProperty *property = objType->properties[prop];
+	if( property->isStatic )
+		return objType->GetAddressOfStaticProperty(prop);
+
 	// Objects are stored by reference, so this must be dereferenced
-	asCDataType *dt = &objType->properties[prop]->type;
+	asCDataType *dt = &property->type;
 	if( dt->IsObject() && !dt->IsObjectHandle() &&
 		(dt->IsReference() || dt->GetTypeInfo()->flags & asOBJ_REF) )
-		return *(void**)(((char*)this) + objType->properties[prop]->byteOffset);
+		return *(void**)(((char*)this) + property->byteOffset);
 
-	return (void*)(((char*)this) + objType->properties[prop]->byteOffset);
+	return (void*)(((char*)this) + property->byteOffset);
 }
 
 void asCScriptObject::EnumReferences(asIScriptEngine *engine)
@@ -813,6 +817,9 @@ void asCScriptObject::EnumReferences(asIScriptEngine *engine)
 	for( asUINT n = 0; n < objType->properties.GetLength(); n++ )
 	{
 		asCObjectProperty *prop = objType->properties[n];
+		if( prop->isStatic )
+			continue;
+
 		void *ptr = 0;
 		if (prop->type.IsObject())
 		{
@@ -841,6 +848,8 @@ void asCScriptObject::ReleaseAllHandles(asIScriptEngine *engine)
 	for( asUINT n = 0; n < objType->properties.GetLength(); n++ )
 	{
 		asCObjectProperty *prop = objType->properties[n];
+		if( prop->isStatic )
+			continue;
 
 		if (prop->type.IsObject())
 		{

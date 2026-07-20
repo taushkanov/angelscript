@@ -105,8 +105,9 @@ public:
 
 	// Properties
 	asUINT      GetPropertyCount() const { return 0; }
-	int         GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect, bool *isConst) const;
-	const char *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const { UNUSED_VAR(index); UNUSED_VAR(includeNamespace); return 0; }
+	int         GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect, bool *isConst, bool *isStatic) const override;
+	virtual void *GetAddressOfStaticProperty(asUINT index) const override { UNUSED_VAR(index); return 0; }
+	const char *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const override { UNUSED_VAR(index); UNUSED_VAR(includeNamespace); return 0; }
 
 	// Behaviours
 	asUINT             GetBehaviourCount() const { return 0; }

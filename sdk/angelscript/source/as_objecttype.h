@@ -117,8 +117,9 @@ public:
 	asIScriptFunction *GetMethodByName(const char *name, bool getVirtual) const;
 	asIScriptFunction *GetMethodByDecl(const char *decl, bool getVirtual) const;
 	asUINT             GetPropertyCount() const;
-	int                GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect, bool *isConst) const;
-	const char        *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const;
+	int                GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect, bool *isConst, bool *isStatic) const override;
+	void              *GetAddressOfStaticProperty(asUINT index) const override;
+	const char        *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const override;
 	asUINT             GetBehaviourCount() const;
 	asIScriptFunction *GetBehaviourByIndex(asUINT index, asEBehaviours *outBehaviour) const;
 	asUINT             GetChildFuncdefCount() const;
@@ -133,7 +134,7 @@ public:
 
 	bool IsInterface() const;
 
-	asCObjectProperty *AddPropertyToClass(const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited);
+	asCObjectProperty *AddPropertyToClass(const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited, bool isStatic = false, asCGlobalProperty *staticGlobal = 0);
 	void ReleaseAllProperties();
 
 #ifdef WIP_16BYTE_ALIGN

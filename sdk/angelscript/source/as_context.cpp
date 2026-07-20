@@ -2121,6 +2121,10 @@ void asCContext::PrepareScriptFunction()
 	{
 		asSScriptVariable *var = m_currentFunction->scriptData->variables[n];
 
+		// Static locals are stored as globals, not on the stack
+		if( var->isStatic )
+			continue;
+
 		// Don't clear the function arguments
 		if (var->stackOffset <= 0)
 			continue;
@@ -5249,14 +5253,15 @@ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLe
 						// Which variable is this? Use IsVarInScope to get the correct variable in case there are multiple variables sharing the same offset
 						asUINT var = asUINT(-1);
 						for (asUINT v = 0; v < func->scriptData->variables.GetLength(); v++)
-							if (func->scriptData->variables[v]->stackOffset == func->scriptData->objVariableInfo[n].variableOffset && 
+							if (func->scriptData->variables[v]->stackOffset == func->scriptData->objVariableInfo[n].variableOffset &&
+								!func->scriptData->variables[v]->isStatic &&
 								IsVarInScope(v, stackLevel) )
 							{
 								var = v;
 								break;
 							}
-						asASSERT(var != asUINT(-1));
-						liveObjects[var] -= 1;
+						if( var != asUINT(-1) )
+							liveObjects[var] -= 1;
 					}
 					break;
 				case asOBJ_INIT: // Object was created
@@ -5265,6 +5270,7 @@ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLe
 						asUINT var = asUINT(-1);
 						for (asUINT v = 0; v < func->scriptData->variables.GetLength(); v++)
 							if (func->scriptData->variables[v]->stackOffset == func->scriptData->objVariableInfo[n].variableOffset &&
+								!func->scriptData->variables[v]->isStatic &&
 								IsVarInScope(v, stackLevel) )
 							{
 								var = v;
@@ -5341,7 +5347,8 @@ void asCContext::CleanArgsOnStack()
 
 		// Find the funcdef from the local variable
 		for( v = 0; v < m_currentFunction->scriptData->variables.GetLength(); v++ )
-			if( m_currentFunction->scriptData->variables[v]->stackOffset == var )
+			if( m_currentFunction->scriptData->variables[v]->stackOffset == var &&
+				!m_currentFunction->scriptData->variables[v]->isStatic )
 			{
 				asASSERT(m_currentFunction->scriptData->variables[v]->type.GetTypeInfo());
 				func = CastToFuncdefType(m_currentFunction->scriptData->variables[v]->type.GetTypeInfo())->funcdef;
@@ -5509,6 +5516,10 @@ bool asCContext::CleanStackFrame(bool catchException)
 
 		for (asUINT n = 0; n < m_currentFunction->scriptData->variables.GetLength(); n++)
 		{
+			// Static locals are stored as globals, not on the stack
+			if( m_currentFunction->scriptData->variables[n]->isStatic )
+				continue;
+
 			int pos = m_currentFunction->scriptData->variables[n]->stackOffset;
 
 			// If the exception was caught, then only clean up objects within the try block
@@ -6069,6 +6080,24 @@ void *asCContext::GetAddressOfVar(asUINT varIndex, asUINT stackLevel, bool dontD
 
 	if( varIndex >= func->scriptData->variables.GetLength() )
 		return 0;
+
+	asSScriptVariable *var = func->scriptData->variables[varIndex];
+
+	// Static locals are stored as module globals
+	if( var->isStatic )
+	{
+		if( var->stackOffset < 0 || (asUINT)var->stackOffset >= m_engine->globalProperties.GetLength() )
+			return 0;
+
+		asCGlobalProperty *prop = m_engine->globalProperties[var->stackOffset];
+		if( !prop )
+			return 0;
+
+		if( prop->type.IsObject() && !prop->type.IsObjectHandle() )
+			return *(void**)(prop->GetAddressOfValue());
+
+		return (void*)(prop->GetAddressOfValue());
+	}
 
 	// For object variables it's necessary to dereference the pointer to get the address of the value
 	// Reference parameters must also be dereferenced to give the address of the value

@@ -108,6 +108,10 @@
 // 1 = Uses computed gotos in the VM
 // 0 = Do not use computed gotos
 
+// Namespace used for internal storage of script static variables (local static and static class members).
+// Debuggers should hide globals in this namespace from the user.
+#define AS_INTERNAL_STATIC_NAMESPACE "__as_static"
+
 
 //
 // Library usage

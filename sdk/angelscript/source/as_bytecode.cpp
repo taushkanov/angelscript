@@ -2565,7 +2565,8 @@ int asCByteCode::InstrW_W(asEBCInstr bc, int a, int b)
 
 int asCByteCode::InstrW_PTR(asEBCInstr bc, short a, void *param)
 {
-	asASSERT(asBCInfo[bc].type == asBCTYPE_wW_PTR_ARG);
+	asASSERT(asBCInfo[bc].type == asBCTYPE_wW_PTR_ARG ||
+	         asBCInfo[bc].type == asBCTYPE_rW_PTR_ARG);
 	asASSERT(asBCInfo[bc].stackInc != 0xFFFF);
 
 	if( AddInstruction() < 0 )

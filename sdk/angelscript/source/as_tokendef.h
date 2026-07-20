@@ -179,7 +179,8 @@ enum eTokenType
 	ttAuto,                // auto
 	ttTry,                 // try
 	ttCatch,               // catch
-	ttUsing                // using
+	ttUsing,               // using
+	ttStatic               // static
 };
 
 struct sTokenWord
@@ -290,6 +291,7 @@ sTokenWord const tokenWords[] =
 	asTokenDef("private"   , ttPrivate),
 	asTokenDef("protected" , ttProtected),
 	asTokenDef("return"    , ttReturn),
+	asTokenDef("static"    , ttStatic),
 	asTokenDef("switch"    , ttSwitch),
 	asTokenDef("true"      , ttTrue),
 	asTokenDef("try"       , ttTry),

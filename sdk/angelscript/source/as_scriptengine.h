@@ -325,6 +325,7 @@ public:
 
 	// Namespace management
 	asSNameSpace *AddNameSpace(const char *name);
+	asSNameSpace *GetInternalStaticNameSpace();
 	asSNameSpace *FindNameSpace(const char *name) const;
 	asSNameSpace *GetParentNameSpace(asSNameSpace *ns) const;
 

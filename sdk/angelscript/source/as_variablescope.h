@@ -49,15 +49,19 @@
 
 BEGIN_AS_NAMESPACE
 
+class asCGlobalProperty;
+
 struct sVariable
 {
-	asCString   name;
-	asCDataType type;
-	int         stackOffset;
-	bool        isInitialized;
-	bool        isPureConstant;
-	asQWORD     constantValue;
-	bool        onHeap;
+	asCString          name;
+	asCDataType        type;
+	int                stackOffset;
+	bool               isInitialized;
+	bool               isPureConstant;
+	asQWORD            constantValue;
+	bool               onHeap;
+	bool               isStatic;
+	asCGlobalProperty *staticProp;
 };
 
 class asCVariableScope

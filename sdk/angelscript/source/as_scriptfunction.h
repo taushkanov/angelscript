@@ -61,8 +61,9 @@ struct asSScriptVariable
 	asCString   name;
 	asCDataType type;
 	int         stackOffset;
-	asUINT      onHeap : 1;
-	asUINT      declaredAtProgramPos : 31;
+	bool        onHeap;
+	bool        isStatic;
+	asUINT      declaredAtProgramPos;
 };
 
 enum asEListPatternNodeType
@@ -254,7 +255,7 @@ public:
 
 	void      DestroyInternal();
 
-	void      AddVariable(const asCString &name, const asCDataType &type, int stackOffset, bool onHeap);
+	void      AddVariable(const asCString &name, const asCDataType &type, int stackOffset, bool onHeap, bool isStatic = false);
 
 	int       GetSpaceNeededForArguments();
 	int       GetSpaceNeededForReturnValue();
