@@ -5,6 +5,7 @@
 #include <stdio.h> // snprintf
 #include <string>
 #include <algorithm> // std::sort
+#include <mutex>
 
 #include "scriptarray.h"
 
@@ -15,6 +16,36 @@ BEGIN_AS_NAMESPACE
 // This macro is used to avoid warnings about unused variables.
 // Usually where the variables are only used in debug mode.
 #define UNUSED_VAR(x) (void)(x)
+
+// Lock one or two arrays by address order to avoid AB/BA deadlocks.
+struct SArrayBufferLocks
+{
+	unique_lock<recursive_mutex> first;
+	unique_lock<recursive_mutex> second;
+
+	explicit SArrayBufferLocks(const CScriptArray &a)
+		: first(a.bufferLock) {}
+
+	SArrayBufferLocks(const CScriptArray &a, const CScriptArray &b)
+	{
+		if (&a == &b)
+		{
+			first = unique_lock<recursive_mutex>(a.bufferLock);
+			return;
+		}
+
+		if (&a < &b)
+		{
+			first = unique_lock<recursive_mutex>(a.bufferLock);
+			second = unique_lock<recursive_mutex>(b.bufferLock);
+		}
+		else
+		{
+			first = unique_lock<recursive_mutex>(b.bufferLock);
+			second = unique_lock<recursive_mutex>(a.bufferLock);
+		}
+	}
+};
 
 // Set the default memory routines
 // Use the angelscript engine's memory routines by default
@@ -392,6 +423,8 @@ CScriptArray &CScriptArray::operator=(const CScriptArray &other)
 	if( &other != this &&
 		other.GetArrayObjectType() == GetArrayObjectType() )
 	{
+		SArrayBufferLocks locks(*this, other);
+
 		// Make sure the arrays are of the same size
 		Resize(other.buffer->numElements);
 
@@ -588,8 +621,10 @@ CScriptArray::CScriptArray(asUINT length, void *defVal, asITypeInfo *ti)
 
 void CScriptArray::SetValue(asUINT index, void *value)
 {
+	SArrayBufferLocks lock(*this);
+
 	// At() will take care of the out-of-bounds checking, though
-	// if called from the application then nothing will be done
+	// if called from a script then nothing will be done
 	void *ptr = At(index);
 	if( ptr == 0 ) return;
 
@@ -652,6 +687,8 @@ void CScriptArray::SetValue(asUINT index, void *value)
 
 CScriptArray::~CScriptArray()
 {
+	SArrayBufferLocks lock(*this);
+
 	if( buffer )
 	{
 		DeleteBuffer(buffer);
@@ -662,16 +699,20 @@ CScriptArray::~CScriptArray()
 
 asUINT CScriptArray::GetSize() const
 {
+	SArrayBufferLocks lock(*this);
 	return buffer->numElements;
 }
 
 bool CScriptArray::IsEmpty() const
 {
+	SArrayBufferLocks lock(*this);
 	return buffer->numElements == 0;
 }
 
 void CScriptArray::Reserve(asUINT maxElements)
 {
+	SArrayBufferLocks lock(*this);
+
 	if( maxElements <= buffer->maxElements )
 		return;
 
@@ -706,6 +747,8 @@ void CScriptArray::Reserve(asUINT maxElements)
 
 void CScriptArray::Resize(asUINT numElements)
 {
+	SArrayBufferLocks lock(*this);
+
 	if( !CheckMaxSize(numElements) )
 		return;
 
@@ -714,6 +757,8 @@ void CScriptArray::Resize(asUINT numElements)
 
 void CScriptArray::RemoveRange(asUINT start, asUINT count)
 {
+	SArrayBufferLocks lock(*this);
+
 	if (count == 0)
 		return;
 
@@ -743,6 +788,9 @@ void CScriptArray::RemoveRange(asUINT start, asUINT count)
 // Internal
 void CScriptArray::Resize(int delta, asUINT at)
 {
+	// Caller must hold bufferLock (public Resize/Insert/Remove take it; recursive re-entry OK).
+	SArrayBufferLocks lock(*this);
+
 	if( delta < 0 )
 	{
 		if( -delta > (int)buffer->numElements )
@@ -787,6 +835,8 @@ void CScriptArray::Resize(int delta, asUINT at)
 			memcpy(newBuffer->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements-at)*elementSize);
 
 		// Initialize the new elements with default values
+		// Keep bufferLock held: Construct may run script factories / Execute / auto-GC,
+		// which can call EnumReferences on this array (recursive_mutex) or other arrays.
 		Construct(newBuffer, at, at+delta);
 
 		// Release the old buffer
@@ -852,6 +902,8 @@ int CScriptArray::GetElementTypeId() const
 
 void CScriptArray::InsertAt(asUINT index, void *value)
 {
+	SArrayBufferLocks lock(*this);
+
 	if( index > buffer->numElements )
 	{
 		// If this is called from a script we raise a script exception
@@ -870,6 +922,8 @@ void CScriptArray::InsertAt(asUINT index, void *value)
 
 void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 {
+	SArrayBufferLocks locks(*this, arr);
+
 	if (index > buffer->numElements)
 	{
 		asIScriptContext *ctx = asGetActiveContext();
@@ -888,11 +942,11 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 		return;
 	}
 
-	asUINT elements = arr.GetSize();
+	asUINT elements = arr.buffer->numElements;
 	Resize(elements, index);
 	if (&arr != this)
 	{
-		for (asUINT n = 0; n < arr.GetSize(); n++)
+		for (asUINT n = 0; n < elements; n++)
 		{
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
@@ -909,15 +963,15 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 		{
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
-			void *value = const_cast<void*>(arr.At(n));
+			void *value = const_cast<void*>(At(n));
 			SetValue(index + n, value);
 		}
 
-		for (asUINT n = index + elements, m = 0; n < arr.GetSize(); n++, m++)
+		for (asUINT n = index + elements, m = 0; n < buffer->numElements; n++, m++)
 		{
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
-			void *value = const_cast<void*>(arr.At(n));
+			void *value = const_cast<void*>(At(n));
 			SetValue(index + index + m, value);
 		}
 	}
@@ -925,11 +979,14 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 
 void CScriptArray::InsertLast(void *value)
 {
+	SArrayBufferLocks lock(*this);
 	InsertAt(buffer->numElements, value);
 }
 
 void CScriptArray::RemoveAt(asUINT index)
 {
+	SArrayBufferLocks lock(*this);
+
 	if( index >= buffer->numElements )
 	{
 		// If this is called from a script we raise a script exception
@@ -945,12 +1002,15 @@ void CScriptArray::RemoveAt(asUINT index)
 
 void CScriptArray::RemoveLast()
 {
+	SArrayBufferLocks lock(*this);
 	RemoveAt(buffer->numElements-1);
 }
 
 // Return a pointer to the array element. Returns 0 if the index is out of bounds
 const void *CScriptArray::At(asUINT index) const
 {
+	SArrayBufferLocks lock(*this);
+
 	if( buffer == 0 || index >= buffer->numElements )
 	{
 		// If this is called from a script we raise a script exception
@@ -972,6 +1032,7 @@ void *CScriptArray::At(asUINT index)
 
 void *CScriptArray::GetBuffer()
 {
+	SArrayBufferLocks lock(*this);
 	return buffer->data;
 }
 
@@ -1097,7 +1158,9 @@ bool CScriptArray::Less(const void *a, const void *b, bool asc)
 
 void CScriptArray::Reverse()
 {
-	asUINT size = GetSize();
+	SArrayBufferLocks lock(*this);
+
+	asUINT size = buffer->numElements;
 
 	if( size >= 2 )
 	{
@@ -1114,10 +1177,12 @@ void CScriptArray::Reverse()
 
 bool CScriptArray::operator==(const CScriptArray &other) const
 {
+	SArrayBufferLocks locks(*this, other);
+
 	if( objType != other.objType )
 		return false;
 
-	if( GetSize() != other.GetSize() )
+	if( buffer->numElements != other.buffer->numElements )
 		return false;
 
 	asIScriptContext *cmpContext = 0;
@@ -1146,7 +1211,7 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 	// Check if all elements are equal
 	bool isEqual = true;
 	SArrayCache *cache = reinterpret_cast<SArrayCache*>(objType->GetUserData(ARRAY_CACHE));
-	for( asUINT n = 0; n < GetSize(); n++ )
+	for( asUINT n = 0; n < buffer->numElements; n++ )
 		if( !Equals(At(n), other.At(n), cmpContext, cache) )
 		{
 			isEqual = false;
@@ -1264,8 +1329,10 @@ int CScriptArray::FindByRef(const void *ref) const
 
 int CScriptArray::FindByRef(asUINT startAt, const void *ref) const
 {
+	SArrayBufferLocks lock(*this);
+
 	// Find the matching element by its reference
-	asUINT size = GetSize();
+	asUINT size = buffer->numElements;
 	if( subTypeId & asTYPEID_OBJHANDLE )
 	{
 		// Dereference the pointer
@@ -1296,6 +1363,8 @@ int CScriptArray::Find(const void *value) const
 
 int CScriptArray::Find(asUINT startAt, const void *value) const
 {
+	SArrayBufferLocks lock(*this);
+
 	// Check if the subtype really supports find()
 	// TODO: Can't this be done at compile time too by the template callback
 	SArrayCache *cache = 0;
@@ -1356,7 +1425,7 @@ int CScriptArray::Find(asUINT startAt, const void *value) const
 
 	// Find the matching element
 	int ret = -1;
-	asUINT size = GetSize();
+	asUINT size = buffer->numElements;
 
 	for( asUINT i = startAt; i < size; i++ )
 	{
@@ -1461,6 +1530,8 @@ void CScriptArray::SortDesc(asUINT startAt, asUINT count)
 // internal
 void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 {
+	SArrayBufferLocks lock(*this);
+
 	// Subtype isn't primitive and doesn't have opCmp
 	SArrayCache *cache = reinterpret_cast<SArrayCache*>(objType->GetUserData(ARRAY_CACHE));
 	if( subTypeId & ~asTYPEID_MASK_SEQNBR )
@@ -1616,6 +1687,8 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 // Sort with script callback for comparing elements
 void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 {
+	SArrayBufferLocks lock(*this);
+
 	// No need to sort
 	if (count < 2)
 		return;
@@ -1652,9 +1725,10 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 	if (cmpContext == 0)
 		cmpContext = objType->GetEngine()->RequestContext();
 
-	// TODO: Security issue: If the array is accessed from the callback while the sort is going on the result may be unpredictable
-	//       For example, the callback resizes the array in the middle of the sort
-	//       Possible solution: set a lock flag on the array, and prohibit modifications while the lock flag is set
+	// Lock held for the whole sort so Resize/Insert/Remove from other threads cannot
+	// race EnumReferences or corrupt the buffer. Nested callback on same array re-enters
+	// via recursive_mutex; callback must not deadlock waiting for another array's lock
+	// while that array waits for this one.
 
 	// Bubble sort
 	// TODO: optimize: Use an efficient sort algorithm
@@ -1904,19 +1978,23 @@ void CScriptArray::Precache()
 // GC behaviour
 void CScriptArray::EnumReferences(asIScriptEngine *engine)
 {
-	// TODO: If garbage collection can be done from a separate thread, then this method must be
-	//       protected so that it doesn't get lost during the iteration if the array is modified
+	// Must be synchronized with Resize/Insert/Remove: GC may run on another thread
+	// while the buffer is reallocated (see AngelScript docs on GC + multithreading).
+	SArrayBufferLocks lock(*this);
 
 	// If the array is holding handles, then we need to notify the GC of them
 	if( subTypeId & asTYPEID_MASK_OBJECT )
 	{
+		// Snapshot layout under the lock so iteration stays consistent even if
+		// GCEnumCallback eventually re-enters (recursive_mutex).
 		void **d = (void**)buffer->data;
+		asUINT numElements = buffer->numElements;
 
 		asITypeInfo *subType = engine->GetTypeInfoById(subTypeId);
 		if ((subType->GetFlags() & asOBJ_REF))
 		{
 			// For reference types we need to notify the GC of each instance
-			for (asUINT n = 0; n < buffer->numElements; n++)
+			for (asUINT n = 0; n < numElements; n++)
 			{
 				if (d[n])
 					engine->GCEnumCallback(d[n]);
@@ -1926,7 +2004,7 @@ void CScriptArray::EnumReferences(asIScriptEngine *engine)
 		{
 			// For value types we need to forward the enum callback
 			// to the object so it can decide what to do
-			for (asUINT n = 0; n < buffer->numElements; n++)
+			for (asUINT n = 0; n < numElements; n++)
 			{
 				if (d[n])
 					engine->ForwardGCEnumReferences(d[n], subType);

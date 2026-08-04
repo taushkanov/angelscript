@@ -6,6 +6,8 @@
 #include <angelscript.h>
 #endif
 
+#include <mutex>
+
 // Sometimes it may be desired to use the same method names as used by C++ STL.
 // This may for example reduce time when converting code from script to C++ or
 // back.
@@ -26,6 +28,7 @@ BEGIN_AS_NAMESPACE
 
 struct SArrayBuffer;
 struct SArrayCache;
+struct SArrayBufferLocks;
 
 class CScriptArray
 {
@@ -112,6 +115,11 @@ protected:
 	SArrayBuffer   *buffer;
 	int             elementSize;
 	int             subTypeId;
+
+	// Protects buffer layout against concurrent Resize/Insert/Remove vs EnumReferences (GC).
+	// recursive: Resize -> Construct/factory -> Execute -> GC -> EnumReferences on same array.
+	mutable std::recursive_mutex bufferLock;
+	friend struct SArrayBufferLocks;
 
 	// Constructors
 	CScriptArray(asITypeInfo *ot, void *initBuf); // Called from script when initialized with list
